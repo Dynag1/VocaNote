@@ -64,5 +64,4 @@ ffmpeg/ffplay.exe
 ffmpeg/ffprobe.exe
 build_executable.bat
 generate_example_audio.py
-build.py
 VERSION.md

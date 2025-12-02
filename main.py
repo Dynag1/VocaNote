@@ -12,10 +12,14 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QTextEdit, QLabel, QFileDialog, QProgressBar,
-    QMessageBox, QComboBox, QGroupBox
+    QMessageBox, QComboBox, QGroupBox, QDialog, QLineEdit, QFormLayout,
+    QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon
+
+# Import du système de licence
+import license as lic
 
 # Supprimer les avertissements FP16 de Whisper
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
@@ -24,11 +28,19 @@ warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
 print("🔍 Configuration de FFmpeg...")
 ffmpeg_dirs = []
 
+# Déterminer le chemin de base (différent en mode développement vs exécutable)
+if getattr(sys, 'frozen', False):
+    # Mode exécutable PyInstaller
+    base_path = sys._MEIPASS
+else:
+    # Mode développement
+    base_path = os.getcwd()
+
 # 1. Chercher dans le dossier local (créé par installer_ffmpeg.bat)
 # Vérifier ffmpeg/bin ET ffmpeg/ racine
 possible_paths = [
-    os.path.join(os.getcwd(), "ffmpeg", "bin"),
-    os.path.join(os.getcwd(), "ffmpeg")
+    os.path.join(base_path, "ffmpeg", "bin"),
+    os.path.join(base_path, "ffmpeg")
 ]
 
 for path in possible_paths:
@@ -66,21 +78,34 @@ else:
 import whisper
 import torch
 
+# --- FIX POUR EXÉCUTABLE SANS CONSOLE ---
+# Rediriger stdout/stderr si None (cas PyInstaller console=False)
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+# ----------------------------------------
+
 
 class TranscriptionThread(QThread):
     """Thread pour effectuer la transcription sans bloquer l'interface"""
     progress = pyqtSignal(str)
     finished = pyqtSignal(dict)  # On renvoie le dictionnaire complet (texte + segments)
     error = pyqtSignal(str)
+    warning = pyqtSignal(str)  # Pour les avertissements de licence
     
-    def __init__(self, audio_file, model_size="base", language=None):
+    def __init__(self, audio_file, model_size="base", language=None, max_duration=None):
         super().__init__()
         self.audio_file = audio_file
         self.model_size = model_size
         self.language = language
+        self.max_duration = max_duration  # Limite de durée en secondes (pour version sans licence)
         
     def run(self):
         try:
+            import tempfile
+            import numpy as np
+            
             self.progress.emit("Chargement du modèle Whisper...")
             
             # Vérifier si CUDA est disponible
@@ -91,20 +116,278 @@ class TranscriptionThread(QThread):
             # Charger le modèle
             model = whisper.load_model(self.model_size, device=device)
             
+            audio_to_transcribe = self.audio_file
+            temp_file = None
+            
+            # Vérifier la limite de durée (version sans licence)
+            if self.max_duration is not None:
+                # Charger l'audio avec Whisper pour vérifier la durée
+                audio = whisper.load_audio(self.audio_file)
+                audio_duration = len(audio) / whisper.audio.SAMPLE_RATE
+                
+                if audio_duration > self.max_duration:
+                    self.warning.emit(f"⚠️ Version d'évaluation : transcription limitée à {self.max_duration} secondes")
+                    
+                    # Tronquer l'audio à la limite
+                    max_samples = int(self.max_duration * whisper.audio.SAMPLE_RATE)
+                    audio_truncated = audio[:max_samples]
+                    
+                    # Sauvegarder l'audio tronqué dans un fichier temporaire
+                    import scipy.io.wavfile as wav
+                    temp_file = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
+                    temp_file.close()
+                    
+                    # Convertir en int16 pour le fichier WAV
+                    audio_int16 = (audio_truncated * 32767).astype(np.int16)
+                    wav.write(temp_file.name, whisper.audio.SAMPLE_RATE, audio_int16)
+                    
+                    audio_to_transcribe = temp_file.name
+            
             self.progress.emit("Transcription en cours...")
             
             # Effectuer la transcription
             result = model.transcribe(
-                self.audio_file,
+                audio_to_transcribe,
                 language=self.language,
                 verbose=False
             )
+            
+            # Nettoyer le fichier temporaire si créé
+            if temp_file is not None:
+                try:
+                    os.remove(temp_file.name)
+                except:
+                    pass
             
             self.progress.emit("Transcription terminée!")
             self.finished.emit(result)  # Renvoyer tout le résultat
             
         except Exception as e:
             self.error.emit(f"Erreur lors de la transcription: {str(e)}")
+
+
+class LicenseDialog(QDialog):
+    """Dialogue pour gérer la licence"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gestion de la licence")
+        self.setMinimumWidth(450)
+        self.setup_ui()
+        self.update_status()
+    
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Statut actuel
+        self.status_group = QGroupBox("Statut de la licence")
+        status_layout = QVBoxLayout()
+        
+        self.status_label = QLabel()
+        self.status_label.setWordWrap(True)
+        status_layout.addWidget(self.status_label)
+        
+        self.status_group.setLayout(status_layout)
+        layout.addWidget(self.status_group)
+        
+        # Code d'activation de la machine
+        activation_group = QGroupBox("Code d'activation de votre machine")
+        activation_layout = QVBoxLayout()
+        
+        activation_info = QLabel("Communiquez ce code pour obtenir une licence :")
+        activation_info.setStyleSheet("color: #666;")
+        activation_layout.addWidget(activation_info)
+        
+        # Affichage du code d'activation
+        activation_code = lic.generate_activation_code()
+        self.activation_code_input = QLineEdit(activation_code)
+        self.activation_code_input.setReadOnly(True)
+        self.activation_code_input.setStyleSheet("""
+            QLineEdit {
+                background-color: #f5f5f5;
+                border: 2px solid #2196F3;
+                border-radius: 5px;
+                padding: 8px;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+                font-weight: bold;
+                color: #1976D2;
+            }
+        """)
+        activation_layout.addWidget(self.activation_code_input)
+        
+        # Bouton copier le code
+        self.btn_copy_code = QPushButton("📋 Copier le code")
+        self.btn_copy_code.clicked.connect(self.copy_activation_code)
+        self.btn_copy_code.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        activation_layout.addWidget(self.btn_copy_code)
+        
+        activation_group.setLayout(activation_layout)
+        layout.addWidget(activation_group)
+        
+        # Saisie de la clé
+        key_group = QGroupBox("Activer une licence")
+        key_layout = QFormLayout()
+        
+        self.key_input = QLineEdit()
+        self.key_input.setPlaceholderText("Entrez votre clé de licence...")
+        self.key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        key_layout.addRow("Clé de licence:", self.key_input)
+        
+        key_group.setLayout(key_layout)
+        layout.addWidget(key_group)
+        
+        # Boutons
+        btn_layout = QHBoxLayout()
+        
+        self.btn_activate = QPushButton("✅ Activer")
+        self.btn_activate.clicked.connect(self.activate_license)
+        self.btn_activate.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        btn_layout.addWidget(self.btn_activate)
+        
+        self.btn_deactivate = QPushButton("❌ Désactiver")
+        self.btn_deactivate.clicked.connect(self.deactivate_license)
+        self.btn_deactivate.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #da190b;
+            }
+        """)
+        btn_layout.addWidget(self.btn_deactivate)
+        
+        self.btn_close = QPushButton("Fermer")
+        self.btn_close.clicked.connect(self.accept)
+        self.btn_close.setStyleSheet("""
+            QPushButton {
+                background-color: #607D8B;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 10px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #546E7A;
+            }
+        """)
+        btn_layout.addWidget(self.btn_close)
+        
+        layout.addLayout(btn_layout)
+        
+        # Info
+        info_label = QLabel("💡 Pour obtenir une licence, rendez-vous sur prog.dynag.co")
+        info_label.setStyleSheet("color: #666; font-style: italic; padding: 10px;")
+        layout.addWidget(info_label)
+    
+    def update_status(self):
+        """Met à jour l'affichage du statut"""
+        status = lic.get_license_status()
+        
+        if status['is_valid']:
+            # Construire le texte avec les infos d'expiration
+            expiry_info = ""
+            if status['is_perpetual']:
+                expiry_info = "Licence perpétuelle"
+            else:
+                days = status['days_remaining']
+                if days is not None:
+                    if days <= 7:
+                        expiry_info = f"<span style='color: #FF5722;'>⏰ {status['days_remaining_text']}</span>"
+                    elif days <= 30:
+                        expiry_info = f"<span style='color: #FF9800;'>⏰ {status['days_remaining_text']}</span>"
+                    else:
+                        expiry_info = f"⏰ {status['days_remaining_text']}"
+                    
+                    if status['expiry_date']:
+                        expiry_info += f"<br>Expire le: {status['expiry_date']}"
+            
+            self.status_label.setText(
+                "✅ <b style='color: #4CAF50;'>Licence active</b><br>"
+                f"Clé: {status['key_masked']}<br>"
+                f"{expiry_info}<br>"
+                "Transcription illimitée"
+            )
+            self.status_label.setStyleSheet("padding: 10px; background-color: #E8F5E9; border-radius: 5px;")
+            self.btn_deactivate.setEnabled(True)
+        else:
+            # Vérifier si c'est une licence expirée
+            if status['expiry_date'] and status['days_remaining'] is not None and status['days_remaining'] < 0:
+                self.status_label.setText(
+                    "❌ <b style='color: #F44336;'>Licence expirée</b><br>"
+                    f"Expirée le: {status['expiry_date']}<br>"
+                    f"Transcription limitée à {status['limit_seconds']} secondes"
+                )
+                self.status_label.setStyleSheet("padding: 10px; background-color: #FFEBEE; border-radius: 5px;")
+            else:
+                self.status_label.setText(
+                    "⚠️ <b style='color: #FF9800;'>Version d'évaluation</b><br>"
+                    f"Transcription limitée à {status['limit_seconds']} secondes"
+                )
+                self.status_label.setStyleSheet("padding: 10px; background-color: #FFF3E0; border-radius: 5px;")
+            self.btn_deactivate.setEnabled(False)
+    
+    def activate_license(self):
+        """Active la licence avec la clé saisie"""
+        key = self.key_input.text().strip()
+        if not key:
+            QMessageBox.warning(self, "Erreur", "Veuillez entrer une clé de licence.")
+            return
+        
+        if lic.activate_license(key):
+            QMessageBox.information(self, "Succès", "✅ Licence activée avec succès!\n\nVous pouvez maintenant transcrire sans limite de durée.")
+            self.key_input.clear()
+            self.update_status()
+        else:
+            QMessageBox.critical(self, "Erreur", "❌ Clé de licence invalide.\n\nVérifiez votre clé et réessayez.")
+    
+    def deactivate_license(self):
+        """Désactive la licence"""
+        reply = QMessageBox.question(
+            self, "Confirmation",
+            "Voulez-vous vraiment désactiver votre licence?\n\nLa transcription sera limitée à 30 secondes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            lic.deactivate_license()
+            self.update_status()
+    
+    def copy_activation_code(self):
+        """Copie le code d'activation dans le presse-papiers"""
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.activation_code_input.text())
+        QMessageBox.information(self, "Copié", "✅ Code d'activation copié dans le presse-papiers!")
 
 
 class VocaNote(QMainWindow):
@@ -116,6 +399,7 @@ class VocaNote(QMainWindow):
         self.transcription_thread = None
         self.last_result = None  # Pour stocker le résultat brut
         self.init_ui()
+        self.update_license_display()
         
     def init_ui(self):
         """Initialiser l'interface utilisateur"""
@@ -131,20 +415,57 @@ class VocaNote(QMainWindow):
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(20, 20, 20, 20)
         
-        # === En-tête ===
+        # === En-tête avec bouton licence ===
+        header_layout = QHBoxLayout()
+        
+        # Spacer gauche
+        header_layout.addStretch()
+        
+        # Titre central
+        title_layout = QVBoxLayout()
         header_label = QLabel("🎤 VocaNote")
         header_font = QFont("Segoe UI", 24, QFont.Weight.Bold)
         header_label.setFont(header_font)
         header_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_label.setStyleSheet("color: #2196F3; padding: 10px;")
-        main_layout.addWidget(header_label)
+        title_layout.addWidget(header_label)
         
         subtitle_label = QLabel("Transcription audio vers texte avec intelligence artificielle")
         subtitle_font = QFont("Segoe UI", 10)
         subtitle_label.setFont(subtitle_font)
         subtitle_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle_label.setStyleSheet("color: #666; padding-bottom: 10px;")
-        main_layout.addWidget(subtitle_label)
+        title_layout.addWidget(subtitle_label)
+        
+        header_layout.addLayout(title_layout)
+        
+        # Spacer droite + bouton licence
+        header_layout.addStretch()
+        
+        # Bouton licence
+        self.btn_license = QPushButton("🔑 Licence")
+        self.btn_license.setFixedSize(100, 35)
+        self.btn_license.clicked.connect(self.show_license_dialog)
+        self.btn_license.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        header_layout.addWidget(self.btn_license)
+        
+        main_layout.addLayout(header_layout)
+        
+        # Indicateur de statut de licence
+        self.license_status_label = QLabel()
+        self.license_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.license_status_label)
         
         # === Section Fichier ===
         file_group = QGroupBox("Fichier Audio")
@@ -423,15 +744,20 @@ class VocaNote(QMainWindow):
         lang_text = self.lang_combo.currentText()
         language = None if lang_text == "Auto-détection" else lang_text.split("(")[1].strip(")")
         
+        # Vérifier la limite de licence
+        max_duration = lic.get_transcription_limit()
+        
         # Créer et démarrer le thread de transcription
         self.transcription_thread = TranscriptionThread(
             self.current_file,
             model_size,
-            language
+            language,
+            max_duration
         )
         self.transcription_thread.progress.connect(self.update_status)
         self.transcription_thread.finished.connect(self.transcription_finished)
         self.transcription_thread.error.connect(self.transcription_error)
+        self.transcription_thread.warning.connect(self.show_warning)
         self.transcription_thread.start()
         
     def update_status(self, message):
@@ -538,6 +864,134 @@ class VocaNote(QMainWindow):
             self.btn_save.setEnabled(False)
             self.btn_clear.setEnabled(False)
             self.status_label.setText("")
+    
+    def show_warning(self, message):
+        """Afficher un avertissement (utilisé pour la limite de licence)"""
+        self.status_label.setText(message)
+        self.status_label.setStyleSheet("color: #FF9800; font-weight: bold;")
+    
+    def show_license_dialog(self):
+        """Affiche le dialogue de gestion de licence"""
+        dialog = LicenseDialog(self)
+        dialog.exec()
+        # Mettre à jour l'affichage après fermeture
+        self.update_license_display()
+    
+    def update_license_display(self):
+        """Met à jour l'affichage du statut de licence"""
+        status = lic.get_license_status()
+        
+        if status['is_valid']:
+            # Afficher les jours restants si ce n'est pas perpétuelle
+            if status['is_perpetual']:
+                display_text = "✅ Licence active (perpétuelle) - Transcription illimitée"
+            else:
+                days = status['days_remaining']
+                if days is not None and days <= 30:
+                    display_text = f"✅ Licence active ({status['days_remaining_text']}) - Transcription illimitée"
+                else:
+                    display_text = f"✅ Licence active ({status['days_remaining_text']}) - Transcription illimitée"
+            
+            self.license_status_label.setText(display_text)
+            
+            # Couleur selon les jours restants
+            days = status['days_remaining']
+            if days is not None and days <= 7:
+                # Avertissement urgent (moins de 7 jours)
+                self.license_status_label.setStyleSheet(
+                    "color: #FF5722; font-weight: bold; padding: 5px; "
+                    "background-color: #FBE9E7; border-radius: 3px;"
+                )
+                self.btn_license.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FF5722;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #E64A19;
+                    }
+                """)
+            elif days is not None and days <= 30:
+                # Avertissement modéré (moins de 30 jours)
+                self.license_status_label.setStyleSheet(
+                    "color: #FF9800; font-weight: bold; padding: 5px; "
+                    "background-color: #FFF3E0; border-radius: 3px;"
+                )
+                self.btn_license.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FF9800;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #F57C00;
+                    }
+                """)
+            else:
+                # Licence OK
+                self.license_status_label.setStyleSheet(
+                    "color: #4CAF50; font-weight: bold; padding: 5px; "
+                    "background-color: #E8F5E9; border-radius: 3px;"
+                )
+                self.btn_license.setStyleSheet("""
+                    QPushButton {
+                        background-color: #4CAF50;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #45a049;
+                    }
+                """)
+        else:
+            # Vérifier si c'est une licence expirée
+            if status['expiry_date'] and status['days_remaining'] is not None and status['days_remaining'] < 0:
+                self.license_status_label.setText(
+                    f"❌ Licence expirée - Transcription limitée à {status['limit_seconds']} secondes"
+                )
+                self.license_status_label.setStyleSheet(
+                    "color: #F44336; font-weight: bold; padding: 5px; "
+                    "background-color: #FFEBEE; border-radius: 3px;"
+                )
+                self.btn_license.setStyleSheet("""
+                    QPushButton {
+                        background-color: #F44336;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #D32F2F;
+                    }
+                """)
+            else:
+                self.license_status_label.setText(
+                    f"⚠️ Version d'évaluation - Transcription limitée à {status['limit_seconds']} secondes"
+                )
+                self.license_status_label.setStyleSheet(
+                    "color: #FF9800; font-weight: bold; padding: 5px; "
+                    "background-color: #FFF3E0; border-radius: 3px;"
+                )
+                self.btn_license.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FF9800;
+                        color: white;
+                        border: none;
+                        border-radius: 5px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #F57C00;
+                    }
+                """)
 
 
 def main():
