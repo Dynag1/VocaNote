@@ -15,7 +15,7 @@ try:
     hiddenimports += tmp_ret[2]
 except: pass
 
-# === DIARISATION (Pyannote) ===
+# === DIARISATION (Pyannote + SpeechBrain) ===
 for pkg in ['pyannote.audio', 'pyannote.core', 'pyannote.database', 'pyannote.pipeline', 'pyannote.metrics']:
     try:
         tmp_ret = collect_all(pkg)
@@ -23,6 +23,18 @@ for pkg in ['pyannote.audio', 'pyannote.core', 'pyannote.database', 'pyannote.pi
         binaries += tmp_ret[1]
         hiddenimports += tmp_ret[2]
     except: pass
+
+# SpeechBrain nécessite une collecte spéciale (lazy imports)
+try:
+    tmp_ret = collect_all('speechbrain')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+    
+    # Collecter explicitement les fichiers data de speechbrain
+    sb_data = collect_data_files('speechbrain', include_py_files=True)
+    datas += sb_data
+except: pass
 
 # === RÉSUMÉ (Transformers/BART) ===
 for pkg in ['transformers', 'tokenizers', 'sentencepiece', 'safetensors']:
@@ -86,8 +98,28 @@ hiddenimports += [
     'sklearn.neighbors._quad_tree',
     'sklearn.tree._utils',
     'sklearn.utils._cython_blas',
-    # Pyannote
+    # Pyannote / SpeechBrain
     'speechbrain',
+    'speechbrain.inference',
+    'speechbrain.dataio',
+    'speechbrain.dataio.dataio',
+    'speechbrain.dataio.batch',
+    'speechbrain.dataio.dataset',
+    'speechbrain.dataio.dataloader',
+    'speechbrain.dataio.encoder',
+    'speechbrain.dataio.iterators',
+    'speechbrain.dataio.legacy',
+    'speechbrain.dataio.sampler',
+    'speechbrain.dataio.wer',
+    'speechbrain.utils',
+    'speechbrain.utils.importutils',
+    'speechbrain.utils.data_utils',
+    'speechbrain.utils.logger',
+    'speechbrain.core',
+    'speechbrain.nnet',
+    'speechbrain.lobes',
+    'speechbrain.processing',
+    'speechbrain.pretrained',
     'asteroid_filterbanks',
     # Lightning
     'lightning',
