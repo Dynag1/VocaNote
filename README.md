@@ -16,6 +16,11 @@ VocaNote est une application de bureau moderne qui utilise l'intelligence artifi
 - 📋 **Copie rapide** dans le presse-papiers
 
 ## 🚀 Installation
+## Windows
+
+Téléchargez l'executable ici : [VocaNote](https://prog.dynag.co/VocaNote/VocaNote_Setup.exe)
+
+## Linux
 
 ### Prérequis
 
@@ -39,27 +44,6 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
-
-## 📦 Création de l'exécutable
-
-### 1. Construire l'exécutable
-
-```bash
-python build.py
-```
-
-Ce script va:
-- Nettoyer les anciens builds
-- Installer PyInstaller si nécessaire
-- Créer le fichier .spec
-- Générer l'exécutable dans `dist/VocaNote/`
-
-### 2. Créer l'installateur Windows
-
-1. Installez [Inno Setup](https://jrsoftware.org/isdl.php)
-2. Ouvrez `setup.iss` avec Inno Setup Compiler
-3. Cliquez sur "Compile" (ou appuyez sur F9)
-4. L'installateur sera créé dans le dossier `installer/`
 
 ## 🎯 Utilisation
 
@@ -170,4 +154,4 @@ Pour toute question ou problème, veuillez ouvrir une issue sur GitHub.
 
 ---
 
-Développé avec ❤️ par VocaNote Team
+Développé avec ❤️ par Dynag

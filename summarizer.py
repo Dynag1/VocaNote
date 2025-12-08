@@ -9,6 +9,7 @@ import logging
 import torch
 import warnings
 import os
+import sys
 from threading import Thread
 from typing import Optional, Callable
 
@@ -17,6 +18,31 @@ warnings.filterwarnings("ignore")
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logging.getLogger("transformers").setLevel(logging.ERROR)
+
+# Patch pour éviter l'erreur torchcodec manquant dans PyInstaller
+# torchcodec est optionnel pour transformers
+try:
+    import importlib.metadata
+    _original_version = importlib.metadata.version
+    def _patched_version(package):
+        if package == "torchcodec":
+            return "0.0.0"  # Version fictive pour éviter l'erreur
+        return _original_version(package)
+    importlib.metadata.version = _patched_version
+    logging.info("[SUMMARIZER] Patch torchcodec appliqué")
+except Exception as e:
+    logging.warning(f"[SUMMARIZER] Patch torchcodec échoué: {e}")
+
+
+def get_base_path() -> str:
+    """Retourne le chemin de base de l'application (compatible PyInstaller)"""
+    if getattr(sys, 'frozen', False):
+        base = sys._MEIPASS
+        logging.info(f"[SUMMARIZER] Mode PyInstaller, base path: {base}")
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+        logging.info(f"[SUMMARIZER] Mode dev, base path: {base}")
+    return base
 
 class TextSummarizer:
     """
@@ -35,7 +61,11 @@ class TextSummarizer:
         
     def load_model(self) -> bool:
         """Charge le modèle de résumé (téléchargement si nécessaire)"""
-        logging.info(f"Summarizer: Chargement du modèle de résumé...")
+        logging.info(f"[SUMMARIZER] === Chargement du modèle de résumé ===")
+        logging.info(f"[SUMMARIZER] Device: {self.device}")
+        logging.info(f"[SUMMARIZER] CWD: {os.getcwd()}")
+        logging.info(f"[SUMMARIZER] sys.executable: {sys.executable}")
+        logging.info(f"[SUMMARIZER] frozen: {getattr(sys, 'frozen', False)}")
         
         # Modèles par ordre de préférence (français d'abord)
         models_to_try = [
@@ -47,19 +77,34 @@ class TextSummarizer:
         
         for model_name in models_to_try:
             try:
+                logging.info(f"[SUMMARIZER] Import transformers...")
                 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-                logging.info(f"Summarizer: Tentative avec {model_name}...")
+                logging.info(f"[SUMMARIZER] Import OK, tentative avec {model_name}...")
+                
+                logging.info(f"[SUMMARIZER] Chargement tokenizer...")
                 self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+                logging.info(f"[SUMMARIZER] Tokenizer OK")
+                
+                logging.info(f"[SUMMARIZER] Chargement modèle...")
                 self.model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                logging.info(f"[SUMMARIZER] Modèle téléchargé, déplacement sur {self.device}...")
+                
                 self.model = self.model.to(self.device)
                 self.model.eval()
                 self.model_name = model_name
-                logging.info(f"Summarizer: Modèle chargé avec succès")
+                logging.info(f"[SUMMARIZER] === Modèle {model_name} chargé avec succès ===")
                 return True
+            except ImportError as e:
+                logging.error(f"[SUMMARIZER] ERREUR IMPORT: {e}")
+                import traceback
+                logging.error(traceback.format_exc())
+                break  # Pas la peine d'essayer d'autres modèles si l'import échoue
             except Exception as e:
-                logging.warning(f"Summarizer: Échec avec {model_name}: {e}")
+                logging.warning(f"[SUMMARIZER] Échec avec {model_name}: {e}")
+                import traceback
+                logging.warning(traceback.format_exc())
                 continue
-        logging.error("Summarizer: Impossible de charger un modèle")
+        logging.error("[SUMMARIZER] Impossible de charger un modèle!")
         return False
 
     def _truncate_text(self, text: str) -> str:

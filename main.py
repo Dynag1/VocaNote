@@ -48,7 +48,7 @@ class LogStream:
 # Capturer les exceptions non gérées
 def exception_hook(exctype, value, tb):
     logging.critical("CRITICAL ERROR: Uncaught exception", exc_info=(exctype, value, tb))
-    # Afficher une boite de dialogue si possible, sinon juste logger
+    # Afficher une boite de dialogue si possible
     try:
         from PyQt6.QtWidgets import QApplication, QMessageBox
         if QApplication.instance():
@@ -60,9 +60,29 @@ def exception_hook(exctype, value, tb):
 
 sys.excepthook = exception_hook
 
-logging.info("--- Démarrage de VocaNote ---")
-logging.info(f"Version Python: {sys.version}")
+# Log de démarrage avec infos système
+logging.info("=" * 60)
+logging.info("VocaNote - Démarrage de l'application")
+logging.info("=" * 60)
+logging.info(f"Mode: {'EXECUTABLE' if getattr(sys, 'frozen', False) else 'DEVELOPPEMENT'}")
+logging.info(f"Python: {sys.version}")
 logging.info(f"Executable: {sys.executable}")
+logging.info(f"CWD: {os.getcwd()}")
+logging.info(f"Log file: {log_file}")
+
+if getattr(sys, 'frozen', False):
+    logging.info(f"_MEIPASS: {sys._MEIPASS}")
+    # Lister les fichiers dans _MEIPASS pour debug
+    try:
+        meipass_files = os.listdir(sys._MEIPASS)[:20]
+        logging.info(f"Fichiers dans _MEIPASS (20 premiers): {meipass_files}")
+        # Vérifier si hf_token.txt est présent
+        if 'hf_token.txt' in os.listdir(sys._MEIPASS):
+            logging.info("hf_token.txt trouvé dans _MEIPASS")
+        else:
+            logging.warning("hf_token.txt NON trouvé dans _MEIPASS!")
+    except Exception as e:
+        logging.error(f"Erreur listdir _MEIPASS: {e}")
 
 from pathlib import Path
 from PyQt6.QtWidgets import (

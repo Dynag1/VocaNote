@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_data_files
 import os
 
 # Collecter toutes les dépendances complexes
@@ -7,117 +7,155 @@ datas = []
 binaries = []
 hiddenimports = []
 
-# Collecter pour pyannote.audio et ses dépendances
-tmp_ret = collect_all('pyannote.audio')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === TRANSCRIPTION (Whisper) ===
+try:
+    tmp_ret = collect_all('whisper')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+except: pass
 
-tmp_ret = collect_all('pyannote.core')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === DIARISATION (Pyannote) ===
+for pkg in ['pyannote.audio', 'pyannote.core', 'pyannote.database', 'pyannote.pipeline', 'pyannote.metrics']:
+    try:
+        tmp_ret = collect_all(pkg)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except: pass
 
-tmp_ret = collect_all('pyannote.database')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === RÉSUMÉ (Transformers/BART) ===
+for pkg in ['transformers', 'tokenizers', 'sentencepiece', 'safetensors']:
+    try:
+        tmp_ret = collect_all(pkg)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except: pass
 
-tmp_ret = collect_all('pyannote.pipeline')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === TORCH / ML ===
+for pkg in ['torch', 'torchaudio', 'torchvision', 'pytorch_lightning', 'lightning_fabric', 'lightning']:
+    try:
+        tmp_ret = collect_all(pkg)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except: pass
 
-# Collecter pour torch
-tmp_ret = collect_all('torch')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === AUDIO ===
+try:
+    tmp_ret = collect_all('av')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+except: pass
 
-# Collecter pour whisper
-tmp_ret = collect_all('whisper')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === HUGGINGFACE ===
+try:
+    tmp_ret = collect_all('huggingface_hub')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+except: pass
 
-# Collecter pour av (AudioDecoder)
-tmp_ret = collect_all('av')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === CRYPTOGRAPHIE (Licence) ===
+try:
+    tmp_ret = collect_all('cryptography')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+except: pass
 
-# Collecter pour huggingface_hub
-tmp_ret = collect_all('huggingface_hub')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
-
-# Collecter pour lightning_fabric (Source de l'erreur version.info)
-tmp_ret = collect_all('lightning_fabric')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
-
-# Collecter pour torchvision (Fix pour RuntimeError: operator torchvision::nms does not exist)
-tmp_ret = collect_all('torchvision')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
-
-# Collecter pour pytorch_lightning
-tmp_ret = collect_all('pytorch_lightning')
-datas += tmp_ret[0]
-binaries += tmp_ret[1]
-hiddenimports += tmp_ret[2]
+# === SCIPY ===
+try:
+    tmp_ret = collect_all('scipy')
+    datas += tmp_ret[0]
+    binaries += tmp_ret[1]
+    hiddenimports += tmp_ret[2]
+except: pass
 
 # Ajouts manuels souvent manquants
 hiddenimports += [
+    # Scipy
     'scipy.special.cython_special',
+    'scipy.io.wavfile',
+    'scipy.signal',
+    # Sklearn
     'sklearn.utils._typedefs',
     'sklearn.neighbors._typedefs',
     'sklearn.neighbors._quad_tree',
     'sklearn.tree._utils',
     'sklearn.utils._cython_blas',
+    # Pyannote
     'speechbrain',
+    'asteroid_filterbanks',
+    # Lightning
     'lightning',
     'pytorch_lightning',
-    'asteroid_filterbanks',
+    # Config
     'einops',
     'omegaconf',
     'semver',
-    'soundfile',
-    'tabulate',
-    'ffmpeg_python',
-    'imageio_ffmpeg',
     'hydra',
     'hydra._internal',
     'hydra._internal.core_plugins',
-    'omegaconf',
     'antlr4',
-    'shutil',
-    'modulefinder',
+    # Audio
+    'soundfile',
+    'ffmpeg',
+    'imageio_ffmpeg',
+    'imageio',
+    # Transformers
+    'transformers.models.bart',
+    'transformers.models.mbart',
+    'transformers.models.auto',
+    'transformers.generation',
+    'transformers.tokenization_utils_base',
+    # Utils
+    'tabulate',
+    'tqdm',
+    'regex',
+    'safetensors',
+    'accelerate',
+    # Modules locaux VocaNote
+    'summarizer',
+    'diarization',
+    'license',
+    # Requis par PyTorch
+    'unittest',
+    'unittest.mock',
+    # Requis par Transformers
+    'torchcodec',
+    'importlib.metadata',
 ]
 
-# Inclure ffmpeg local s'il existe dans le dossier source
+# Inclure ffmpeg local s'il existe
 if os.path.exists('ffmpeg'):
     datas += [('ffmpeg', 'ffmpeg')]
 
-# Inclure les fichiers de config et docs
-datas += [
-    ('config.ini', '.'),
-    ('README_FR.md', '.'),
-    ('LICENSE.txt', '.'),
-    ('START_HERE.txt', '.'),
-    ('MODELES_A_ACCEPTER.md', '.'),
-    ('DEPANNAGE_*.md', '.'),
-    ('GUIDE_*.md', '.'),
-]
+# Inclure les modules Python locaux
+local_modules = ['summarizer.py', 'diarization.py', 'license.py']
+for mod in local_modules:
+    if os.path.exists(mod):
+        datas += [(mod, '.')]
+
+# Inclure les fichiers de configuration
+config_files = ['config.ini', 'hf_token.txt']
+for cfg in config_files:
+    if os.path.exists(cfg):
+        datas += [(cfg, '.')]
+
+# Inclure les fichiers de documentation
+doc_files = ['README_FR.md', 'LICENSE.txt', 'START_HERE.txt', 'DEMARRAGE_RAPIDE.md']
+for doc in doc_files:
+    if os.path.exists(doc):
+        datas += [(doc, '.')]
 
 block_cipher = None
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['.'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -125,13 +163,15 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'matplotlib', 'IPython', 'jupyter', 'notebook', 'tkinter', 'test', 'tests'
+        'matplotlib', 'IPython', 'jupyter', 'notebook', 'tkinter', 
+        'pytest'
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
     noarchive=False,
 )
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
@@ -144,7 +184,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False, # Console désactivée pour la version de production (voir vocanote.log pour les erreurs)
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -152,6 +192,7 @@ exe = EXE(
     entitlements_file=None,
     icon='logoVN.ico' if os.path.exists('logoVN.ico') else None,
 )
+
 coll = COLLECT(
     exe,
     a.binaries,

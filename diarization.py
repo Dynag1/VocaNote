@@ -6,6 +6,7 @@ Détecte et identifie les différents locuteurs dans un enregistrement audio
 """
 
 import os
+import sys
 import warnings
 from typing import Dict, List, Tuple, Optional
 import torch
@@ -16,6 +17,19 @@ import subprocess
 warnings.filterwarnings("ignore")
 
 import logging
+
+
+def get_base_path() -> str:
+    """Retourne le chemin de base de l'application (compatible PyInstaller)"""
+    if getattr(sys, 'frozen', False):
+        # Exécutable PyInstaller
+        base = sys._MEIPASS
+        logging.info(f"[DIARIZATION] Mode PyInstaller, base path: {base}")
+    else:
+        # Mode développement
+        base = os.path.dirname(os.path.abspath(__file__))
+        logging.info(f"[DIARIZATION] Mode dev, base path: {base}")
+    return base
 
 
 def convert_to_wav_if_needed(audio_file: str) -> str:
@@ -81,43 +95,75 @@ class SpeakerDiarization:
         """
         Récupère le token HuggingFace depuis le fichier hf_token.txt
         """
-        token_file = os.path.join(os.path.dirname(__file__), "hf_token.txt")
-        if os.path.exists(token_file):
-            try:
-                with open(token_file, 'r') as f:
-                    token = f.read().strip()
-                    if token:
-                        return token
-            except Exception:
-                pass
+        base_path = get_base_path()
+        
+        # Chercher dans plusieurs emplacements possibles
+        possible_paths = [
+            os.path.join(base_path, "hf_token.txt"),
+            os.path.join(os.path.dirname(sys.executable), "hf_token.txt") if getattr(sys, 'frozen', False) else None,
+            os.path.join(os.getcwd(), "hf_token.txt"),
+        ]
+        
+        for token_file in possible_paths:
+            if token_file and os.path.exists(token_file):
+                logging.info(f"[DIARIZATION] Token trouvé: {token_file}")
+                try:
+                    with open(token_file, 'r') as f:
+                        token = f.read().strip()
+                        if token:
+                            logging.info(f"[DIARIZATION] Token chargé (longueur: {len(token)})")
+                            return token
+                except Exception as e:
+                    logging.error(f"[DIARIZATION] Erreur lecture token: {e}")
+            else:
+                logging.debug(f"[DIARIZATION] Token non trouvé: {token_file}")
+        
+        logging.warning("[DIARIZATION] Aucun token HuggingFace trouvé!")
         return None
         
     def load_model(self):
         """
         Charge le modèle de diarisation
         """
-        logging.info("Diarisation: Chargement du modèle...")
+        logging.info("[DIARIZATION] === Chargement du modèle de diarisation ===")
+        logging.info(f"[DIARIZATION] Device: {self.device}")
+        logging.info(f"[DIARIZATION] CWD: {os.getcwd()}")
+        logging.info(f"[DIARIZATION] sys.executable: {sys.executable}")
+        
         try:
+            logging.info("[DIARIZATION] Import pyannote.audio...")
             from pyannote.audio import Pipeline
+            logging.info("[DIARIZATION] Import pyannote.audio OK")
             
             # Charger le pipeline de diarisation
             # Token HuggingFace: via variable d'environnement ou fichier config
             hf_token = os.environ.get("HF_TOKEN") or self._get_token_from_config()
             
+            if not hf_token:
+                logging.error("[DIARIZATION] ERREUR: Pas de token HuggingFace!")
+                return False
+            
+            logging.info("[DIARIZATION] Téléchargement/chargement du pipeline...")
             self.pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.0",
-                use_auth_token=hf_token
+                token=hf_token  # Nouveau nom du paramètre (anciennement use_auth_token)
             )
+            logging.info("[DIARIZATION] Pipeline chargé!")
             
             # Déplacer sur GPU si disponible
             if self.device == "cuda":
+                logging.info("[DIARIZATION] Déplacement sur GPU...")
                 self.pipeline.to(torch.device("cuda"))
             
-            logging.info("Diarisation: Modèle chargé avec succès")
+            logging.info("[DIARIZATION] === Modèle chargé avec succès ===")
             return True
             
+        except ImportError as e:
+            logging.error(f"[DIARIZATION] ERREUR IMPORT: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
         except Exception as e:
-            logging.error(f"Diarisation ERROR: {e}")
+            logging.error(f"[DIARIZATION] ERREUR: {e}")
             import traceback
             logging.error(traceback.format_exc())
             return False

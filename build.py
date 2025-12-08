@@ -157,8 +157,9 @@ hiddenimports += [
     'antlr4',
     # Audio
     'soundfile',
-    'ffmpeg_python',
+    'ffmpeg',
     'imageio_ffmpeg',
+    'imageio',
     # Transformers
     'transformers.models.bart',
     'transformers.models.mbart',
@@ -175,6 +176,12 @@ hiddenimports += [
     'summarizer',
     'diarization',
     'license',
+    # Requis par PyTorch
+    'unittest',
+    'unittest.mock',
+    # Requis par Transformers
+    'torchcodec',
+    'importlib.metadata',
 ]
 
 # Inclure ffmpeg local s'il existe
@@ -212,7 +219,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         'matplotlib', 'IPython', 'jupyter', 'notebook', 'tkinter', 
-        'test', 'tests', 'unittest', 'pytest'
+        'pytest'
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
