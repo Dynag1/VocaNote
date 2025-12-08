@@ -70,4 +70,3 @@ ffmpeg/ffprobe.exe
 # build_executable.bat
 generate_example_audio.py
 VERSION.md
-setup.iss
