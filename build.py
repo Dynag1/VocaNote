@@ -187,9 +187,11 @@ for mod in local_modules:
     if os.path.exists(mod):
         datas += [(mod, '.')]
 
-# Inclure config.ini s'il existe
-if os.path.exists('config.ini'):
-    datas += [('config.ini', '.')]
+# Inclure les fichiers de configuration
+config_files = ['config.ini', 'hf_token.txt']
+for cfg in config_files:
+    if os.path.exists(cfg):
+        datas += [(cfg, '.')]
 
 # Inclure les fichiers de documentation
 doc_files = ['README_FR.md', 'LICENSE.txt', 'START_HERE.txt', 'DEMARRAGE_RAPIDE.md']
