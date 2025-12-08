@@ -23,12 +23,14 @@
 ## ✨ Fonctionnalités
 
 - 🎯 **Transcription précise** avec l'IA Whisper d'OpenAI
+- 🎤 **Diarisation des locuteurs** : Détecte automatiquement qui parle (Locuteur 1, 2, 3...)
 - 🌍 **Multilingue** : Français, Anglais, Espagnol, Allemand, Italien, Portugais...
 - 🎨 **Interface moderne** et intuitive
 - ⚡ **Accélération GPU** (NVIDIA CUDA)
 - 📁 **Formats multiples** : WAV, MP3, M4A, FLAC, OGG
 - 💾 **Export facile** : Copie, sauvegarde TXT
 - 🔧 **5 modèles** : du plus rapide au plus précis
+- ⏱️ **Mode Conversation** : Affichage avec timestamps pour distinguer les tours de parole
 
 ---
 
@@ -99,6 +101,8 @@ python main.py
 | **[DEMARRAGE_RAPIDE.md](DEMARRAGE_RAPIDE.md)** | 🚀 Guide 3 étapes | Débutants |
 | **[INSTALLATION.md](INSTALLATION.md)** | 📦 Installation détaillée | Tous |
 | **[GUIDE_VISUEL.md](GUIDE_VISUEL.md)** | 🎨 Interface et design | Utilisateurs |
+| **[GUIDE_DIARISATION.md](GUIDE_DIARISATION.md)** | 🎤 Diarisation des locuteurs | Utilisateurs avancés |
+| **[CONFIG_DIARISATION.md](CONFIG_DIARISATION.md)** | ⚙️ Configuration rapide diarisation | Tous |
 | **[RESUME.md](RESUME.md)** | 📝 Résumé du projet | Tous |
 | **[STRUCTURE_PROJET.md](STRUCTURE_PROJET.md)** | 📁 Architecture | Développeurs |
 

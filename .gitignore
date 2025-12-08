@@ -22,7 +22,7 @@ wheels/
 
 # PyInstaller
 *.manifest
-*.spec
+# *.spec
 
 # Virtual environments
 venv/
@@ -47,6 +47,11 @@ Output/
 # Logs
 *.log
 
+# Secrets / Tokens
+hf_token.txt
+vocanote_license.json
+*.json
+
 # Whisper models cache
 ~/.cache/whisper/
 convert_icon.py
@@ -58,10 +63,11 @@ logoVN.png
 NOTES_TECHNIQUES.md
 RESUME.md
 STRUCTURE_PROJET.md
-setup.iss
+# setup.iss
 ffmpeg/ffmpeg.exe
 ffmpeg/ffplay.exe
 ffmpeg/ffprobe.exe
-build_executable.bat
+# build_executable.bat
 generate_example_audio.py
 VERSION.md
+setup.iss

@@ -8,6 +8,62 @@ Application de transcription audio utilisant Whisper d'OpenAI
 import sys
 import os
 import warnings
+import traceback
+import logging
+from datetime import datetime
+
+# --- CONFIGURATION LOGGING ---
+# Définir le chemin du fichier de log
+if getattr(sys, 'frozen', False):
+    # En mode exe, écrire dans le dossier utilisateur ou à côté de l'exe
+    # Dossier AppData/Local/VocaNote pour être propre sous Windows
+    log_dir = os.path.join(os.environ.get('LOCALAPPDATA', os.getcwd()), 'VocaNote')
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, 'vocanote.log')
+else:
+    # En dev, écrire à la racine
+    log_file = 'vocanote.log'
+
+logging.basicConfig(
+    filename=log_file,
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    encoding='utf-8'
+)
+
+# Rediriger stdout et stderr vers les logs
+class LogStream:
+    def __init__(self, level):
+        self.level = level
+    def write(self, message):
+        if message.strip():
+            self.level(message.strip())
+    def flush(self):
+        pass
+
+# Ne rediriger que si pas de console (mode frozen sans console)
+# sys.stdout = LogStream(logging.info)
+# sys.stderr = LogStream(logging.error)
+
+# Capturer les exceptions non gérées
+def exception_hook(exctype, value, tb):
+    logging.critical("CRITICAL ERROR: Uncaught exception", exc_info=(exctype, value, tb))
+    # Afficher une boite de dialogue si possible, sinon juste logger
+    try:
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        if QApplication.instance():
+            error_msg = "".join(traceback.format_exception(exctype, value, tb))
+            QMessageBox.critical(None, "Erreur Critique", f"Une erreur est survenue:\n{value}\n\nVoir les logs: {log_file}")
+    except:
+        pass
+    sys.__excepthook__(exctype, value, tb)
+
+sys.excepthook = exception_hook
+
+logging.info("--- Démarrage de VocaNote ---")
+logging.info(f"Version Python: {sys.version}")
+logging.info(f"Executable: {sys.executable}")
+
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -20,6 +76,11 @@ from PyQt6.QtGui import QFont, QIcon
 
 # Import du système de licence
 import license as lic
+
+# Import du module de diarisation
+from diarization import SpeakerDiarization
+# Import du module de résumé
+from summarizer import get_summarizer
 
 # Supprimer les avertissements FP16 de Whisper
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU")
@@ -50,11 +111,17 @@ for path in possible_paths:
         break
 
 # 2. Chercher via imageio_ffmpeg (si installé)
+# 2. Chercher via imageio_ffmpeg (si installé)
 try:
     import imageio_ffmpeg
-    imageio_path = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
-    print(f"   ✅ imageio-ffmpeg trouvé: {imageio_path}")
-    ffmpeg_dirs.append(imageio_path)
+    try:
+        # Ppeut échouer en mode frozen
+        exe_path = imageio_ffmpeg.get_ffmpeg_exe()
+        imageio_path = os.path.dirname(exe_path)
+        print(f"   ✅ imageio-ffmpeg trouvé: {imageio_path}")
+        ffmpeg_dirs.append(imageio_path)
+    except Exception as e:
+        print(f"   ℹ️ imageio-ffmpeg erreur runtime: {e}")
 except ImportError:
     print("   ℹ️ imageio-ffmpeg non installé")
 
@@ -87,19 +154,46 @@ if sys.stderr is None:
 # ----------------------------------------
 
 
+class SummaryThread(QThread):
+    """Thread pour générer le résumé sans bloquer l'interface"""
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+    
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+        
+    def run(self):
+        try:
+            summarizer = get_summarizer()
+            # Ratio adaptatif en fonction de la longueur (pour les longs textes on compresse plus)
+            if len(self.text) > 10000:
+                ratio = 0.1
+            else:
+                ratio = 0.2
+                
+            summary = summarizer.summarize(self.text, ratio=ratio)
+            self.finished.emit(summary)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
 class TranscriptionThread(QThread):
     """Thread pour effectuer la transcription sans bloquer l'interface"""
     progress = pyqtSignal(str)
+    progress_percent = pyqtSignal(int)  # Signal pour la progression en pourcentage
+    progress_indeterminate = pyqtSignal(bool) # Signal pour passer en mode indéterminé
     finished = pyqtSignal(dict)  # On renvoie le dictionnaire complet (texte + segments)
     error = pyqtSignal(str)
     warning = pyqtSignal(str)  # Pour les avertissements de licence
     
-    def __init__(self, audio_file, model_size="base", language=None, max_duration=None):
+    def __init__(self, audio_file, model_size="base", language=None, max_duration=None, enable_diarization=False):
         super().__init__()
         self.audio_file = audio_file
         self.model_size = model_size
         self.language = language
         self.max_duration = max_duration  # Limite de durée en secondes (pour version sans licence)
+        self.enable_diarization = enable_diarization  # Activer la diarisation des locuteurs
         
     def run(self):
         try:
@@ -143,14 +237,78 @@ class TranscriptionThread(QThread):
                     
                     audio_to_transcribe = temp_file.name
             
-            self.progress.emit("Transcription en cours...")
+            # Charger l'audio pour calculer la durée et les segments
+            audio = whisper.load_audio(audio_to_transcribe)
+            audio_duration = len(audio) / whisper.audio.SAMPLE_RATE
             
-            # Effectuer la transcription
-            result = model.transcribe(
-                audio_to_transcribe,
-                language=self.language,
-                verbose=False
-            )
+            # Whisper traite par segments de 30 secondes
+            SEGMENT_DURATION = 30
+            num_segments = max(1, int(np.ceil(audio_duration / SEGMENT_DURATION)))
+            
+            self.progress.emit(f"Transcription en cours... ({int(audio_duration)}s d'audio)")
+            self.progress_percent.emit(0)
+            
+            # Transcription segment par segment pour progression réelle
+            all_segments = []
+            full_text = ""
+            
+            for i in range(num_segments):
+                start_sample = i * SEGMENT_DURATION * whisper.audio.SAMPLE_RATE
+                end_sample = min((i + 1) * SEGMENT_DURATION * whisper.audio.SAMPLE_RATE, len(audio))
+                
+                segment_audio = audio[int(start_sample):int(end_sample)]
+                
+                # Émettre la progression AVANT de transcrire ce segment
+                progress_percent = int((i / num_segments) * 95)
+                self.progress_percent.emit(progress_percent)
+                self.progress.emit(f"Transcription segment {i+1}/{num_segments}...")
+                
+                # Transcrire ce segment
+                # Utiliser pad_or_trim pour s'assurer que l'audio fait exactement 30s
+                segment_audio_padded = whisper.pad_or_trim(segment_audio)
+                mel = whisper.log_mel_spectrogram(segment_audio_padded).to(device)
+                
+                # Détecter la langue si pas spécifiée (seulement pour le premier segment)
+                if i == 0 and self.language is None:
+                    _, probs = model.detect_language(mel)
+                    detected_lang = max(probs, key=probs.get)
+                    self.progress.emit(f"Langue détectée: {detected_lang}")
+                    decode_language = detected_lang
+                else:
+                    decode_language = self.language if self.language else "fr"
+                
+                # Options de décodage
+                options = whisper.DecodingOptions(
+                    language=decode_language,
+                    without_timestamps=False
+                )
+                
+                # Décoder le segment
+                decode_result = whisper.decode(model, mel, options)
+                
+                segment_text = decode_result.text.strip()
+                if segment_text:
+                    # Calculer les timestamps réels
+                    segment_start_time = i * SEGMENT_DURATION
+                    
+                    # Ajouter au texte complet
+                    full_text += segment_text + " "
+                    
+                    # Créer un segment avec les timestamps
+                    all_segments.append({
+                        'start': segment_start_time,
+                        'end': min(segment_start_time + SEGMENT_DURATION, audio_duration),
+                        'text': segment_text
+                    })
+            
+            # Créer le résultat final
+            result = {
+                'text': full_text.strip(),
+                'segments': all_segments,
+                'language': decode_language if 'decode_language' in dir() else self.language
+            }
+            
+            self.progress_percent.emit(100)
             
             # Nettoyer le fichier temporaire si créé
             if temp_file is not None:
@@ -158,6 +316,38 @@ class TranscriptionThread(QThread):
                     os.remove(temp_file.name)
                 except:
                     pass
+            
+            # Effectuer la diarisation si activée
+            if self.enable_diarization:
+                try:
+                    self.progress.emit("Détection des locuteurs en cours... (Cela peut prendre plusieurs minutes la première fois lors du téléchargement des modèles)")
+                    self.progress_indeterminate.emit(True) # Mode indéterminé
+                    
+                    diarizer = SpeakerDiarization()
+                    
+                    if diarizer.load_model():
+                        # Effectuer la diarisation
+                        diarization_segments = diarizer.diarize(self.audio_file)
+                        
+                        if diarization_segments:
+                            # Fusionner avec la transcription
+                            merged_segments = diarizer.merge_with_transcription(
+                                result.get('segments', []),
+                                diarization_segments
+                            )
+                            
+                            # Ajouter les segments fusionnés au résultat
+                            result['diarized_segments'] = merged_segments
+                            self.progress.emit("Diarisation terminée!")
+                        else:
+                            self.warning.emit("⚠️ Aucun locuteur détecté")
+                    else:
+                        self.warning.emit("⚠️ Impossible de charger le modèle de diarisation")
+                    
+                    self.progress_indeterminate.emit(False) # Retour au mode normal
+                except Exception as e:
+                    self.progress_indeterminate.emit(False)
+                    self.warning.emit(f"⚠️ Erreur lors de la diarisation: {str(e)}")
             
             self.progress.emit("Transcription terminée!")
             self.finished.emit(result)  # Renvoyer tout le résultat
@@ -557,10 +747,26 @@ class VocaNote(QMainWindow):
         
         # Ligne 2 : Options d'affichage
         from PyQt6.QtWidgets import QCheckBox
-        self.check_timestamps = QCheckBox("Afficher les timestamps (Mode Conversation) - Idéal pour plusieurs interlocuteurs")
-        self.check_timestamps.setToolTip("Affiche le temps [00:00 -> 00:05] devant chaque phrase.\nUtile pour distinguer les tours de parole.")
+        self.check_timestamps = QCheckBox("⏱️ Afficher les timestamps")
+        self.check_timestamps.setStyleSheet("QCheckBox { color: #000000; font-size: 11pt; }")
+        self.check_timestamps.setToolTip(
+            "Mode Conversation - Affiche le temps [00:00 -> 00:05] devant chaque phrase.\n"
+            "Idéal pour plusieurs interlocuteurs et pour distinguer les tours de parole."
+        )
         self.check_timestamps.stateChanged.connect(self.refresh_text_display)
         settings_layout.addWidget(self.check_timestamps)
+        
+        # Option de diarisation
+        self.check_diarization = QCheckBox("🎤 Détecter les locuteurs")
+        self.check_diarization.setStyleSheet("QCheckBox { color: #000000; font-size: 11pt; }")
+        self.check_diarization.setToolTip(
+            "Diarisation - Identifie automatiquement qui parle.\n"
+            "Affiche 'Locuteur 1', 'Locuteur 2', etc. dans la transcription.\n"
+            "Active automatiquement les timestamps.\n"
+            "Note: Nécessite un token HuggingFace (gratuit) pour le premier usage."
+        )
+        self.check_diarization.stateChanged.connect(self.on_diarization_changed)
+        settings_layout.addWidget(self.check_diarization)
         
         settings_group.setLayout(settings_layout)
         main_layout.addWidget(settings_group)
@@ -641,6 +847,23 @@ class VocaNote(QMainWindow):
         self.btn_copy.setEnabled(False)
         self.btn_copy.clicked.connect(self.copy_text)
         
+        # Bouton Résumer
+        self.btn_summarize = QPushButton("📝 Résumer (IA)")
+        self.btn_summarize.setEnabled(False)
+        self.btn_summarize.clicked.connect(self.generate_summary)
+        # Style spécifique pour le différencier
+        self.btn_summarize.setStyleSheet("""
+            QPushButton {
+                background-color: #673AB7; 
+                color: white;
+                font-weight: bold; 
+                border-radius: 5px;
+                padding: 10px;
+            }
+            QPushButton:hover:enabled { background-color: #5E35B1; }
+            QPushButton:disabled { background-color: #cccccc; color: #666666; }
+        """)
+        
         self.btn_save = QPushButton("💾 Enregistrer")
         self.btn_save.setEnabled(False)
         self.btn_save.clicked.connect(self.save_text)
@@ -649,6 +872,10 @@ class VocaNote(QMainWindow):
         self.btn_clear.setEnabled(False)
         self.btn_clear.clicked.connect(self.clear_text)
         
+        # On ajoute le résumé au layout
+        action_layout.addWidget(self.btn_summarize)
+        
+        # Styles communs pour les autres boutons
         for btn in [self.btn_copy, self.btn_save, self.btn_clear]:
             btn.setMinimumHeight(35)
             btn.setStyleSheet("""
@@ -724,16 +951,32 @@ class VocaNote(QMainWindow):
         if not self.current_file:
             return
             
+        # Si la diarisation est activée, avertir du téléchargement potentiel
+        enable_diarization = self.check_diarization.isChecked()
+        if enable_diarization:
+            reply = QMessageBox.question(
+                self, 
+                "Téléchargement de modèles", 
+                "La diarisation nécessite le téléchargement de modèles externes (~500 Mo) lors de la première utilisation.\n\n"
+                "La détection des locuteurs prolongera également le temps de traitement.\n\n"
+                "Voulez-vous continuer ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                QMessageBox.StandardButton.Yes
+            )
+            if reply == QMessageBox.StandardButton.No:
+                return
+
         # Désactiver les boutons pendant la transcription
         self.btn_select.setEnabled(False)
         self.btn_transcribe.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.lang_combo.setEnabled(False)
         self.check_timestamps.setEnabled(False)
+        self.check_diarization.setEnabled(False)
         
         # Afficher la barre de progression
         self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 0)  # Mode indéterminé
+        self.progress_bar.setRange(0, 100)  # Mode avec pourcentage (0-100%)
         
         # Effacer le texte précédent
         self.text_edit.clear()
@@ -752,17 +995,31 @@ class VocaNote(QMainWindow):
             self.current_file,
             model_size,
             language,
-            max_duration
+            max_duration,
+            enable_diarization
         )
         self.transcription_thread.progress.connect(self.update_status)
+        self.transcription_thread.progress_percent.connect(self.update_progress_bar)
+        self.transcription_thread.progress_indeterminate.connect(self.on_progress_indeterminate)
         self.transcription_thread.finished.connect(self.transcription_finished)
         self.transcription_thread.error.connect(self.transcription_error)
         self.transcription_thread.warning.connect(self.show_warning)
         self.transcription_thread.start()
         
+    def on_progress_indeterminate(self, indeterminate):
+        """Passer la barre de progression en mode indéterminé (busy)"""
+        if indeterminate:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            
     def update_status(self, message):
         """Mettre à jour le message de statut"""
         self.status_label.setText(message)
+    
+    def update_progress_bar(self, percent):
+        """Mettre à jour la barre de progression avec le pourcentage"""
+        self.progress_bar.setValue(percent)
         
     def format_timestamp(self, seconds):
         """Formater les secondes en MM:SS"""
@@ -773,9 +1030,40 @@ class VocaNote(QMainWindow):
         """Rafraîchir l'affichage du texte selon les options"""
         if not self.last_result:
             return
-            
-        if self.check_timestamps.isChecked():
-            # Mode avec timestamps (segments)
+        
+        # Vérifier si on a des segments diarisés
+        diarized_segments = self.last_result.get("diarized_segments", [])
+        
+        if diarized_segments:
+            # Mode avec diarisation
+            if self.check_timestamps.isChecked():
+                # Avec timestamps et locuteurs
+                full_text = ""
+                for segment in diarized_segments:
+                    start = self.format_timestamp(segment.get("start", 0))
+                    end = self.format_timestamp(segment.get("end", 0))
+                    speaker = segment.get("speaker", "Locuteur inconnu")
+                    text = segment.get("text", "").strip()
+                    if text:
+                        full_text += f"[{start} -> {end}] [{speaker}] {text}\n"
+                self.text_edit.setPlainText(full_text)
+            else:
+                # Sans timestamps, juste les locuteurs
+                full_text = ""
+                current_speaker = None
+                for segment in diarized_segments:
+                    speaker = segment.get("speaker", "Locuteur inconnu")
+                    text = segment.get("text", "").strip()
+                    if not text:
+                        continue
+                    # Ajouter le nom du locuteur si changement
+                    if speaker != current_speaker:
+                        full_text += f"\n[{speaker}]\n"
+                        current_speaker = speaker
+                    full_text += text + " "
+                self.text_edit.setPlainText(full_text.strip())
+        elif self.check_timestamps.isChecked():
+            # Mode avec timestamps (segments) sans diarisation
             full_text = ""
             segments = self.last_result.get("segments", [])
             for segment in segments:
@@ -803,11 +1091,13 @@ class VocaNote(QMainWindow):
         self.model_combo.setEnabled(True)
         self.lang_combo.setEnabled(True)
         self.check_timestamps.setEnabled(True)
+        self.check_diarization.setEnabled(True)
         
         # Activer les boutons d'action
         self.btn_copy.setEnabled(True)
         self.btn_save.setEnabled(True)
         self.btn_clear.setEnabled(True)
+        self.btn_summarize.setEnabled(True)
         
     def transcription_error(self, error_message):
         """Appelé en cas d'erreur"""
@@ -823,6 +1113,7 @@ class VocaNote(QMainWindow):
         self.model_combo.setEnabled(True)
         self.lang_combo.setEnabled(True)
         self.check_timestamps.setEnabled(True)
+        self.check_diarization.setEnabled(True)
         
     def copy_text(self):
         """Copier le texte dans le presse-papiers"""
@@ -863,7 +1154,16 @@ class VocaNote(QMainWindow):
             self.btn_copy.setEnabled(False)
             self.btn_save.setEnabled(False)
             self.btn_clear.setEnabled(False)
+            self.btn_summarize.setEnabled(False)
             self.status_label.setText("")
+    
+    def on_diarization_changed(self):
+        """Appelé quand l'option de diarisation change"""
+        if self.check_diarization.isChecked():
+            # Activer automatiquement les timestamps si diarisation activée
+            self.check_timestamps.setChecked(True)
+        # Rafraîchir l'affichage si on a déjà un résultat
+        self.refresh_text_display()
     
     def show_warning(self, message):
         """Afficher un avertissement (utilisé pour la limite de licence)"""
@@ -992,6 +1292,95 @@ class VocaNote(QMainWindow):
                         background-color: #F57C00;
                     }
                 """)
+
+
+    def generate_summary(self):
+        """Générer le résumé du texte actuel"""
+        text = self.text_edit.toPlainText()
+        if not text:
+            return
+            
+        # Confirmation (surtout pour le premier chargement)
+        reply = QMessageBox.question(
+            self, 
+            "Générer un résumé ?", 
+            "La génération du résumé utilise un modèle d'IA supplémentaire (~500 Mo téléchargés la 1ère fois).\n\n"
+            "Voulez-vous continuer ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.Yes
+        )
+        
+        if reply == QMessageBox.StandardButton.No:
+            return
+            
+        self.status_label.setText("⏳ Génération du résumé en cours...")
+        self.status_label.setStyleSheet("color: #673AB7; font-weight: bold;")
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0) # Indéterminé (barre qui bouge)
+        
+        # Désactiver les boutons
+        self.btn_summarize.setEnabled(False)
+        self.text_edit.setEnabled(False)
+        
+        # Lancer le thread
+        self.summary_thread = SummaryThread(text)
+        self.summary_thread.finished.connect(self.on_summary_finished)
+        self.summary_thread.error.connect(self.on_summary_error)
+        self.summary_thread.start()
+        
+    def on_summary_finished(self, summary):
+        """Action quand le résumé est terminé"""
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("✅ Résumé généré !")
+        self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        
+        # Réactiver les boutons
+        self.btn_summarize.setEnabled(True)
+        self.text_edit.setEnabled(True)
+        
+        # Afficher le résumé dans une boite de dialogue stylée
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Résumé (IA)")
+        dialog.resize(600, 400)
+        
+        layout = QVBoxLayout()
+        
+        lbl = QLabel("Résumé généré :")
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        layout.addWidget(lbl)
+        
+        txt_edit = QTextEdit()
+        txt_edit.setPlainText(summary)
+        txt_edit.setReadOnly(True)
+        txt_edit.setFont(QFont("Segoe UI", 11))
+        layout.addWidget(txt_edit)
+        
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Save)
+        btns.accepted.connect(dialog.accept)
+        # Gestion du bouton Save
+        def save_summary():
+            path, _ = QFileDialog.getSaveFileName(dialog, "Sauvegarder le résumé", "resume.txt", "Fichiers Texte (*.txt)")
+            if path:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(summary)
+                QMessageBox.information(dialog, "Succès", "Résumé enregistré !")
+                
+        btns.button(QDialogButtonBox.StandardButton.Save).clicked.connect(save_summary)
+        
+        layout.addWidget(btns)
+        dialog.setLayout(layout)
+        dialog.exec()
+        
+    def on_summary_error(self, error_msg):
+        """Erreur lors du résumé"""
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("❌ Erreur de résumé")
+        self.status_label.setStyleSheet("color: red; font-weight: bold;")
+        
+        self.btn_summarize.setEnabled(True)
+        self.text_edit.setEnabled(True)
+        
+        QMessageBox.critical(self, "Erreur Résumé", f"Une erreur est survenue :\n{error_msg}")
 
 
 def main():
