@@ -45,6 +45,14 @@ pip install -r requirements.txt
 python main.py
 ```
 
+---
+
+## Licences
+
+Poour débloquer toutes les fonctionnalités, vous aurez besoin d'une licence, vous pouvez la demander ici : [https://li.dynag.co](https://li.dynag.co)
+
+---
+
 ## 🎯 Utilisation
 
 1. **Sélectionner un fichier audio**
